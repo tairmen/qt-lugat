@@ -1,0 +1,25 @@
+{
+  "name": "lugat-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for Russian to Crimean Tatar word translation",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "admin": "node admin.js",
+    "export:csv": "node scripts/export-csv.js",
+    "import:postgres": "node scripts/import-postgres.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "dictionary",
+    "crimean-tatar"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "pg": "^8.13.1"
+  }
+}
