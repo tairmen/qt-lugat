@@ -422,6 +422,7 @@ bot.onText(/^\/start$/, (message) => {
     '',
     'Commands:',
     '/translate <word> - find translation',
+    '/report <word> - report a translation issue',
     '/help - show help',
     '',
     'You can also just send a Russian or Crimean Tatar word directly.'
@@ -437,10 +438,29 @@ bot.onText(/^\/help$/, (message) => {
     '/translate alma',
     '/translate язык',
     '',
-    'Or send a word without a command.'
+    'Or send a word without a command.',
+    '',
+    'Found a wrong translation? Use /report <word>.'
   ].join('\n');
   bot.sendMessage(message.chat.id, reply);
   logChatSession(databasePool, { chatId: message.chat.id, ...getMeta(message), query: '/help', response: reply }).catch(() => {});
+});
+
+bot.onText(/^\/report(?:\s+(.+))?$/i, async (message, match) => {
+  const word = match && match[1] ? match[1].trim() : '';
+
+  if (!word) {
+    bot.sendMessage(message.chat.id, 'Usage: /report <word>\nExample: /report яблоко');
+    return;
+  }
+
+  try {
+    await logReport(databasePool, { chatId: message.chat.id, ...getMeta(message), word });
+    bot.sendMessage(message.chat.id, `Thank you! Your report for "${word}" has been submitted.`);
+  } catch (error) {
+    console.error(`Failed to save report: ${error.message}`);
+    bot.sendMessage(message.chat.id, 'Failed to submit report. Try again later.');
+  }
 });
 
 bot.onText(/^\/translate(?:\s+(.+))?$/i, (message, match) => {
