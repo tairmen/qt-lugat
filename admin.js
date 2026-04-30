@@ -214,8 +214,9 @@ function layout(title, content) {
 <body>
   <div class="shell">
     <nav>
-      <a href="/words" class="${title.includes('Session') ? '' : 'active'}">Words</a>
-      <a href="/sessions" class="${title.includes('Session') ? 'active' : ''}">Sessions</a>
+      <a href="/words" class="${title.includes('Session') || title.includes('User') ? '' : 'active'}">Words</a>
+      <a href="/users" class="${title.includes('User') ? 'active' : ''}">Users</a>
+      <a href="/sessions" class="${title.includes('Session') && !title.includes('User') ? 'active' : ''}">Sessions</a>
     </nav>
     ${content}
   </div>
@@ -545,6 +546,201 @@ app.post('/words/:id/delete', async (req, res, next) => {
     await client.connect();
     await client.query(`DELETE FROM ${databaseConfig.table} WHERE id = $1`, [req.params.id]);
     res.redirect('/words?flash=' + encodeURIComponent('Word deleted successfully. Restart bot to reload dictionary.'));
+  } catch (error) {
+    next(error);
+  } finally {
+    await client.end().catch(() => {});
+  }
+});
+
+app.get('/users', async (req, res, next) => {
+  const page = parsePositiveInt(req.query.page, 1);
+  const perPage = 50;
+  const search = String(req.query.search || '').trim();
+  const offset = (page - 1) * perPage;
+
+  const client = createDatabaseClient(databaseConfig);
+
+  try {
+    await client.connect();
+
+    const where = search
+      ? { clause: 'WHERE username ILIKE $1 OR first_name ILIKE $1 OR chat_id::text ILIKE $1', values: [`%${search}%`] }
+      : { clause: '', values: [] };
+
+    const countResult = await client.query(
+      `SELECT COUNT(DISTINCT chat_id)::int AS count FROM chat_sessions ${where.clause}`,
+      where.values
+    );
+    const totalRows = countResult.rows[0].count;
+    const totalPages = Math.max(1, Math.ceil(totalRows / perPage));
+
+    const limitParam = where.values.length + 1;
+    const offsetParam = where.values.length + 2;
+    const listResult = await client.query(
+      `SELECT chat_id,
+              MAX(username) AS username,
+              MAX(first_name) AS first_name,
+              COUNT(*)::int AS total_sessions,
+              MIN(created_at) AS first_seen,
+              MAX(created_at) AS last_seen
+       FROM chat_sessions
+       ${where.clause}
+       GROUP BY chat_id
+       ORDER BY last_seen DESC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      [...where.values, perPage, offset]
+    );
+
+    const prevPage = page > 1 ? page - 1 : null;
+    const nextPage = page < totalPages ? page + 1 : null;
+    const searchPart = search ? `&search=${encodeURIComponent(search)}` : '';
+
+    const rowsHtml = listResult.rows.map((row) => `
+      <tr>
+        <td class="mono">${escapeHtml(row.chat_id)}</td>
+        <td>${escapeHtml(row.username ? '@' + row.username : '')}</td>
+        <td>${escapeHtml(row.first_name || '')}</td>
+        <td class="mono">${escapeHtml(row.total_sessions)}</td>
+        <td class="mono" style="white-space:nowrap">${escapeHtml(new Date(row.first_seen).toISOString().replace('T', ' ').slice(0, 19))}</td>
+        <td class="mono" style="white-space:nowrap">${escapeHtml(new Date(row.last_seen).toISOString().replace('T', ' ').slice(0, 19))}</td>
+        <td><a class="button secondary" href="/users/${encodeURIComponent(row.chat_id)}/sessions">View Sessions</a></td>
+      </tr>
+    `).join('');
+
+    res.send(layout(
+      'Users',
+      `<div class="topbar">
+        <div>
+          <h1 class="title">Users</h1>
+          <p class="subtitle">All unique Telegram users who have interacted with the bot.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <form method="get" action="/users">
+            <input name="search" value="${escapeHtml(search)}" placeholder="Search by username, name or chat ID">
+            <button type="submit">Search</button>
+            <a class="button secondary" href="/users">Reset</a>
+          </form>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Chat ID</th>
+              <th>Username</th>
+              <th>Name</th>
+              <th>Sessions</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || '<tr><td colspan="7">No users found.</td></tr>'}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div>Page ${page} of ${totalPages} · ${totalRows} users</div>
+          <div class="actions">
+            ${prevPage ? `<a class="button secondary" href="/users?page=${prevPage}${searchPart}">Previous</a>` : ''}
+            ${nextPage ? `<a class="button secondary" href="/users?page=${nextPage}${searchPart}">Next</a>` : ''}
+          </div>
+        </div>
+      </div>`
+    ));
+  } catch (error) {
+    next(error);
+  } finally {
+    await client.end().catch(() => {});
+  }
+});
+
+app.get('/users/:chatId/sessions', async (req, res, next) => {
+  const chatId = req.params.chatId;
+  const page = parsePositiveInt(req.query.page, 1);
+  const perPage = 50;
+  const offset = (page - 1) * perPage;
+
+  const client = createDatabaseClient(databaseConfig);
+
+  try {
+    await client.connect();
+
+    const userResult = await client.query(
+      `SELECT chat_id, MAX(username) AS username, MAX(first_name) AS first_name
+       FROM chat_sessions WHERE chat_id = $1 GROUP BY chat_id`,
+      [chatId]
+    );
+
+    if (userResult.rows.length === 0) {
+      res.status(404).send(layout('User Sessions', '<div class="panel">User not found.</div>'));
+      return;
+    }
+
+    const user = userResult.rows[0];
+    const displayName = user.username ? '@' + user.username : (user.first_name || String(user.chat_id));
+
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM chat_sessions WHERE chat_id = $1`,
+      [chatId]
+    );
+    const totalRows = countResult.rows[0].count;
+    const totalPages = Math.max(1, Math.ceil(totalRows / perPage));
+
+    const listResult = await client.query(
+      `SELECT id, query, response, created_at
+       FROM chat_sessions
+       WHERE chat_id = $1
+       ORDER BY id DESC
+       LIMIT $2 OFFSET $3`,
+      [chatId, perPage, offset]
+    );
+
+    const prevPage = page > 1 ? page - 1 : null;
+    const nextPage = page < totalPages ? page + 1 : null;
+
+    const rowsHtml = listResult.rows.map((row) => `
+      <tr>
+        <td class="mono">${escapeHtml(row.id)}</td>
+        <td>${escapeHtml(row.query || '')}</td>
+        <td class="translation-cell">${escapeHtml(row.response || '')}</td>
+        <td class="mono" style="white-space:nowrap">${escapeHtml(new Date(row.created_at).toISOString().replace('T', ' ').slice(0, 19))}</td>
+      </tr>
+    `).join('');
+
+    res.send(layout(
+      `User Sessions: ${displayName}`,
+      `<div class="topbar">
+        <div>
+          <h1 class="title">${escapeHtml(displayName)}</h1>
+          <p class="subtitle">Chat ID: ${escapeHtml(user.chat_id)} · ${totalRows} sessions total.</p>
+        </div>
+        <a class="button secondary" href="/users">Back to Users</a>
+      </div>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Query</th>
+              <th>Response</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || '<tr><td colspan="4">No sessions found.</td></tr>'}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div>Page ${page} of ${totalPages} · ${totalRows} rows</div>
+          <div class="actions">
+            ${prevPage ? `<a class="button secondary" href="/users/${encodeURIComponent(chatId)}/sessions?page=${prevPage}">Previous</a>` : ''}
+            ${nextPage ? `<a class="button secondary" href="/users/${encodeURIComponent(chatId)}/sessions?page=${nextPage}">Next</a>` : ''}
+          </div>
+        </div>
+      </div>`
+    ));
   } catch (error) {
     next(error);
   } finally {
