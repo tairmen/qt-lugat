@@ -48,9 +48,33 @@ function createDatabasePool(config = getDatabaseConfig()) {
   });
 }
 
+async function ensureChatSessionsTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id          BIGSERIAL PRIMARY KEY,
+      chat_id     BIGINT    NOT NULL,
+      username    TEXT,
+      first_name  TEXT,
+      query       TEXT,
+      response    TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function logChatSession(pool, { chatId, username, firstName, query, response }) {
+  await pool.query(
+    `INSERT INTO chat_sessions (chat_id, username, first_name, query, response)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [chatId, username || null, firstName || null, query || null, response || null]
+  );
+}
+
 module.exports = {
   createDatabaseClient,
   createDatabasePool,
   getDatabaseConfig,
-  validateDatabaseConfig
+  validateDatabaseConfig,
+  ensureChatSessionsTable,
+  logChatSession
 };

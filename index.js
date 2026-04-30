@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 require('dotenv').config();
 
-const { createDatabaseClient, createDatabasePool, getDatabaseConfig } = require('./database');
+const { createDatabaseClient, createDatabasePool, getDatabaseConfig, ensureChatSessionsTable, logChatSession } = require('./database');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -362,11 +362,13 @@ const databaseConfig = getDatabaseConfig();
 const databasePool = createDatabasePool(databaseConfig);
 const bot = new TelegramBot(token, { polling: false });
 
-async function respondWithLookup(chatId, query) {
+async function respondWithLookup(chatId, query, meta = {}) {
   const cleanedQuery = String(query || '').trim();
 
   if (!cleanedQuery) {
-    bot.sendMessage(chatId, 'Send a Russian or Crimean Tatar word, or use /translate <word>.');
+    const reply = 'Send a Russian or Crimean Tatar word, or use /translate <word>.';
+    bot.sendMessage(chatId, reply);
+    logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: reply }).catch(() => {});
     return;
   }
 
@@ -375,61 +377,67 @@ async function respondWithLookup(chatId, query) {
     const index = buildIndex(dictionary);
     const result = findMatches(index, cleanedQuery);
 
+    let message;
+
     if (result.exact.length > 0) {
-      const message = result.source === 'translation'
+      message = result.source === 'translation'
         ? formatReverseExactMatches(cleanedQuery, result.exact)
         : formatForwardExactMatches(cleanedQuery, result.exact);
-      bot.sendMessage(chatId, message);
-      return;
-    }
-
-    if (result.suggestions.length > 0) {
-      const message = result.source === 'translation'
+    } else if (result.suggestions.length > 0) {
+      message = result.source === 'translation'
         ? formatReverseSuggestions(cleanedQuery, result.suggestions)
         : formatForwardSuggestions(cleanedQuery, result.suggestions);
-      bot.sendMessage(chatId, message);
-      return;
+    } else {
+      message = `No translation found for: ${cleanedQuery}`;
     }
 
-    bot.sendMessage(chatId, `No translation found for: ${cleanedQuery}`);
+    bot.sendMessage(chatId, message);
+    logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: message }).catch(() => {});
   } catch (error) {
     console.error(`Lookup failed: ${error.message}`);
-    bot.sendMessage(chatId, 'Database request failed. Try again later.');
+    const reply = 'Database request failed. Try again later.';
+    bot.sendMessage(chatId, reply);
+    logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: reply }).catch(() => {});
   }
 }
 
+function getMeta(message) {
+  return {
+    username: message.from && message.from.username,
+    firstName: message.from && message.from.first_name
+  };
+}
+
 bot.onText(/^\/start$/, (message) => {
-  bot.sendMessage(
-    message.chat.id,
-    [
-      'Russian -> Crimean Tatar dictionary bot.',
-      'Crimean Tatar -> Russian lookup is also supported.',
-      '',
-      'Commands:',
-      '/translate <word> - find translation',
-      '/help - show help',
-      '',
-      'You can also just send a Russian or Crimean Tatar word directly.'
-    ].join('\n')
-  );
+  const reply = [
+    'Russian -> Crimean Tatar dictionary bot.',
+    'Crimean Tatar -> Russian lookup is also supported.',
+    '',
+    'Commands:',
+    '/translate <word> - find translation',
+    '/help - show help',
+    '',
+    'You can also just send a Russian or Crimean Tatar word directly.'
+  ].join('\n');
+  bot.sendMessage(message.chat.id, reply);
+  logChatSession(databasePool, { chatId: message.chat.id, ...getMeta(message), query: '/start', response: reply }).catch(() => {});
 });
 
 bot.onText(/^\/help$/, (message) => {
-  bot.sendMessage(
-    message.chat.id,
-    [
-      'Usage examples:',
-      '/translate яблоко',
-      '/translate alma',
-      '/translate язык',
-      '',
-      'Or send a word without a command.'
-    ].join('\n')
-  );
+  const reply = [
+    'Usage examples:',
+    '/translate яблоко',
+    '/translate alma',
+    '/translate язык',
+    '',
+    'Or send a word without a command.'
+  ].join('\n');
+  bot.sendMessage(message.chat.id, reply);
+  logChatSession(databasePool, { chatId: message.chat.id, ...getMeta(message), query: '/help', response: reply }).catch(() => {});
 });
 
 bot.onText(/^\/translate(?:\s+(.+))?$/i, (message, match) => {
-  void respondWithLookup(message.chat.id, match && match[1]);
+  void respondWithLookup(message.chat.id, match && match[1], getMeta(message));
 });
 
 bot.on('message', (message) => {
@@ -441,7 +449,7 @@ bot.on('message', (message) => {
     return;
   }
 
-  void respondWithLookup(message.chat.id, message.text);
+  void respondWithLookup(message.chat.id, message.text, getMeta(message));
 });
 
 bot.on('polling_error', (error) => {
@@ -453,6 +461,7 @@ async function startBot() {
 
   await client.connect();
   await client.end();
+  await ensureChatSessionsTable(databasePool);
   await bot.startPolling();
   console.log(
     `Bot is running. Every lookup reads dictionary data from PostgreSQL table ${databaseConfig.table}.`
