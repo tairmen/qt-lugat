@@ -70,11 +70,34 @@ async function logChatSession(pool, { chatId, username, firstName, query, respon
   );
 }
 
+async function ensureReportsTable(pool) {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reports (
+      id          BIGSERIAL PRIMARY KEY,
+      chat_id     BIGINT    NOT NULL,
+      username    TEXT,
+      first_name  TEXT,
+      word        TEXT,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function logReport(pool, { chatId, username, firstName, word }) {
+  await pool.query(
+    `INSERT INTO reports (chat_id, username, first_name, word)
+     VALUES ($1, $2, $3, $4)`,
+    [chatId, username || null, firstName || null, word || null]
+  );
+}
+
 module.exports = {
   createDatabaseClient,
   createDatabasePool,
   getDatabaseConfig,
   validateDatabaseConfig,
   ensureChatSessionsTable,
-  logChatSession
+  logChatSession,
+  ensureReportsTable,
+  logReport
 };

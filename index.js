@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 require('dotenv').config();
 
-const { createDatabaseClient, createDatabasePool, getDatabaseConfig, ensureChatSessionsTable, logChatSession } = require('./database');
+const { createDatabaseClient, createDatabasePool, getDatabaseConfig, ensureChatSessionsTable, logChatSession, ensureReportsTable, logReport } = require('./database');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -391,7 +391,14 @@ async function respondWithLookup(chatId, query, meta = {}) {
       message = `No translation found for: ${cleanedQuery}`;
     }
 
-    bot.sendMessage(chatId, message);
+    const reportKeyboard = {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '⚠️ Report issue', callback_data: `report:${cleanedQuery.slice(0, 57)}` }
+        ]]
+      }
+    };
+    bot.sendMessage(chatId, message, reportKeyboard);
     logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: message }).catch(() => {});
   } catch (error) {
     console.error(`Lookup failed: ${error.message}`);
@@ -452,6 +459,26 @@ bot.on('message', (message) => {
   void respondWithLookup(message.chat.id, message.text, getMeta(message));
 });
 
+bot.on('callback_query', async (query) => {
+  if (!query.data || !query.data.startsWith('report:')) {
+    return;
+  }
+
+  const word = query.data.slice('report:'.length);
+  const meta = {
+    username: query.from && query.from.username,
+    firstName: query.from && query.from.first_name
+  };
+
+  try {
+    await logReport(databasePool, { chatId: query.message.chat.id, ...meta, word });
+    bot.answerCallbackQuery(query.id, { text: 'Report submitted. Thank you!' });
+  } catch (error) {
+    console.error(`Failed to save report: ${error.message}`);
+    bot.answerCallbackQuery(query.id, { text: 'Failed to submit report. Try again later.' });
+  }
+});
+
 bot.on('polling_error', (error) => {
   console.error('Polling error:', error.message);
 });
@@ -462,6 +489,7 @@ async function startBot() {
   await client.connect();
   await client.end();
   await ensureChatSessionsTable(databasePool);
+  await ensureReportsTable(databasePool);
   await bot.startPolling();
   console.log(
     `Bot is running. Every lookup reads dictionary data from PostgreSQL table ${databaseConfig.table}.`

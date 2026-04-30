@@ -214,9 +214,10 @@ function layout(title, content) {
 <body>
   <div class="shell">
     <nav>
-      <a href="/words" class="${title.includes('Session') || title.includes('User') ? '' : 'active'}">Words</a>
+      <a href="/words" class="${!title.includes('Session') && !title.includes('User') && !title.includes('Report') ? 'active' : ''}">Words</a>
       <a href="/users" class="${title.includes('User') ? 'active' : ''}">Users</a>
       <a href="/sessions" class="${title.includes('Session') && !title.includes('User') ? 'active' : ''}">Sessions</a>
+      <a href="/reports" class="${title.includes('Report') ? 'active' : ''}">Reports</a>
     </nav>
     ${content}
   </div>
@@ -836,6 +837,125 @@ app.get('/sessions', async (req, res, next) => {
         </div>
       </div>`
     ));
+  } catch (error) {
+    next(error);
+  } finally {
+    await client.end().catch(() => {});
+  }
+});
+
+app.get('/reports', async (req, res, next) => {
+  const page = parsePositiveInt(req.query.page, 1);
+  const perPage = 50;
+  const search = String(req.query.search || '').trim();
+  const flash = String(req.query.flash || '').trim();
+  const offset = (page - 1) * perPage;
+
+  const client = createDatabaseClient(databaseConfig);
+
+  try {
+    await client.connect();
+
+    const where = search
+      ? { clause: 'WHERE word ILIKE $1 OR username ILIKE $1 OR first_name ILIKE $1 OR chat_id::text ILIKE $1', values: [`%${search}%`] }
+      : { clause: '', values: [] };
+
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM reports ${where.clause}`,
+      where.values
+    );
+    const totalRows = countResult.rows[0].count;
+    const totalPages = Math.max(1, Math.ceil(totalRows / perPage));
+
+    const limitParam = where.values.length + 1;
+    const offsetParam = where.values.length + 2;
+    const listResult = await client.query(
+      `SELECT id, chat_id, username, first_name, word, created_at
+       FROM reports
+       ${where.clause}
+       ORDER BY id DESC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      [...where.values, perPage, offset]
+    );
+
+    const prevPage = page > 1 ? page - 1 : null;
+    const nextPage = page < totalPages ? page + 1 : null;
+    const searchPart = search ? `&search=${encodeURIComponent(search)}` : '';
+    const flashHtml = flash ? `<div class="flash">${escapeHtml(flash)}</div>` : '';
+
+    const rowsHtml = listResult.rows.map((row) => `
+      <tr>
+        <td class="mono">${escapeHtml(row.id)}</td>
+        <td class="mono">${escapeHtml(row.chat_id)}</td>
+        <td>${escapeHtml(row.username ? '@' + row.username : row.first_name || '')}</td>
+        <td>${escapeHtml(row.word || '')}</td>
+        <td class="mono" style="white-space:nowrap">${escapeHtml(new Date(row.created_at).toISOString().replace('T', ' ').slice(0, 19))}</td>
+        <td>
+          <div class="actions">
+            <a class="button secondary" href="/words?search=${encodeURIComponent(row.word || '')}">Find Word</a>
+            <form method="post" action="/reports/${encodeURIComponent(row.id)}/delete" onsubmit="return confirm('Delete this report?');">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+
+    res.send(layout(
+      'Reports',
+      `<div class="topbar">
+        <div>
+          <h1 class="title">Reports</h1>
+          <p class="subtitle">Translation issues reported by users via the bot.</p>
+        </div>
+      </div>
+      ${flashHtml}
+      <div class="panel">
+        <div class="toolbar">
+          <form method="get" action="/reports">
+            <input name="search" value="${escapeHtml(search)}" placeholder="Search by word, username or chat ID">
+            <button type="submit">Search</button>
+            <a class="button secondary" href="/reports">Reset</a>
+          </form>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Chat ID</th>
+              <th>User</th>
+              <th>Word</th>
+              <th>Time</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || '<tr><td colspan="6">No reports found.</td></tr>'}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div>Page ${page} of ${totalPages} · ${totalRows} reports</div>
+          <div class="actions">
+            ${prevPage ? `<a class="button secondary" href="/reports?page=${prevPage}${searchPart}">Previous</a>` : ''}
+            ${nextPage ? `<a class="button secondary" href="/reports?page=${nextPage}${searchPart}">Next</a>` : ''}
+          </div>
+        </div>
+      </div>`
+    ));
+  } catch (error) {
+    next(error);
+  } finally {
+    await client.end().catch(() => {});
+  }
+});
+
+app.post('/reports/:id/delete', async (req, res, next) => {
+  const client = createDatabaseClient(databaseConfig);
+
+  try {
+    await client.connect();
+    await client.query('DELETE FROM reports WHERE id = $1', [req.params.id]);
+    res.redirect('/reports?flash=' + encodeURIComponent('Report deleted.'));
   } catch (error) {
     next(error);
   } finally {
