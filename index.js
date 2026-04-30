@@ -391,14 +391,19 @@ async function respondWithLookup(chatId, query, meta = {}) {
       message = `No translation found for: ${cleanedQuery}`;
     }
 
-    // const reportKeyboard = {
-    //   reply_markup: {
-    //     inline_keyboard: [[
-    //       { text: '⚠️ Report issue', callback_data: `report:${cleanedQuery.slice(0, 57)}` }
-    //     ]]
-    //   }
-    // };
-    bot.sendMessage(chatId, message);
+    if (result.exact.length === 0) {
+      const reportKeyboard = {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '⚠️ Report issue', callback_data: `report:${cleanedQuery.slice(0, 57)}` }
+          ]]
+        }
+      };
+
+      bot.sendMessage(chatId, message, reportKeyboard);
+    } else {
+      bot.sendMessage(chatId, message);
+    }
     logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: message }).catch(() => {});
   } catch (error) {
     console.error(`Lookup failed: ${error.message}`);
