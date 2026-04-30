@@ -180,6 +180,30 @@ function layout(title, content) {
       flex-wrap: wrap;
       align-items: center;
     }
+    nav {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 24px;
+    }
+    nav a {
+      display: inline-block;
+      padding: 7px 14px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 14px;
+      color: var(--muted);
+      border: 1px solid transparent;
+    }
+    nav a:hover {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    nav a.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: #b2d9bc;
+      font-weight: 600;
+    }
     @media (max-width: 800px) {
       .grid { grid-template-columns: 1fr; }
       th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; }
@@ -189,6 +213,10 @@ function layout(title, content) {
 </head>
 <body>
   <div class="shell">
+    <nav>
+      <a href="/words" class="${title.includes('Session') ? '' : 'active'}">Words</a>
+      <a href="/sessions" class="${title.includes('Session') ? 'active' : ''}">Sessions</a>
+    </nav>
     ${content}
   </div>
 </body>
@@ -517,6 +545,101 @@ app.post('/words/:id/delete', async (req, res, next) => {
     await client.connect();
     await client.query(`DELETE FROM ${databaseConfig.table} WHERE id = $1`, [req.params.id]);
     res.redirect('/words?flash=' + encodeURIComponent('Word deleted successfully. Restart bot to reload dictionary.'));
+  } catch (error) {
+    next(error);
+  } finally {
+    await client.end().catch(() => {});
+  }
+});
+
+app.get('/sessions', async (req, res, next) => {
+  const page = parsePositiveInt(req.query.page, 1);
+  const perPage = 50;
+  const search = String(req.query.search || '').trim();
+  const offset = (page - 1) * perPage;
+
+  const client = createDatabaseClient(databaseConfig);
+
+  try {
+    await client.connect();
+
+    const where = search
+      ? { clause: 'WHERE query ILIKE $1 OR response ILIKE $1 OR username ILIKE $1', values: [`%${search}%`] }
+      : { clause: '', values: [] };
+
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM chat_sessions ${where.clause}`,
+      where.values
+    );
+    const totalRows = countResult.rows[0].count;
+    const totalPages = Math.max(1, Math.ceil(totalRows / perPage));
+
+    const limitParam = where.values.length + 1;
+    const offsetParam = where.values.length + 2;
+    const listResult = await client.query(
+      `SELECT id, chat_id, username, first_name, query, response, created_at
+       FROM chat_sessions
+       ${where.clause}
+       ORDER BY id DESC
+       LIMIT $${limitParam} OFFSET $${offsetParam}`,
+      [...where.values, perPage, offset]
+    );
+
+    const prevPage = page > 1 ? page - 1 : null;
+    const nextPage = page < totalPages ? page + 1 : null;
+    const searchPart = search ? `&search=${encodeURIComponent(search)}` : '';
+
+    const rowsHtml = listResult.rows.map((row) => `
+      <tr>
+        <td class="mono">${escapeHtml(row.id)}</td>
+        <td class="mono">${escapeHtml(row.chat_id)}</td>
+        <td>${escapeHtml(row.username ? '@' + row.username : row.first_name || '')}</td>
+        <td>${escapeHtml(row.query || '')}</td>
+        <td class="translation-cell">${escapeHtml(row.response || '')}</td>
+        <td class="mono" style="white-space:nowrap">${escapeHtml(new Date(row.created_at).toISOString().replace('T', ' ').slice(0, 19))}</td>
+      </tr>
+    `).join('');
+
+    res.send(layout(
+      'Sessions',
+      `<div class="topbar">
+        <div>
+          <h1 class="title">Sessions</h1>
+          <p class="subtitle">Every query sent to the Telegram bot and the response it returned.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <form method="get" action="/sessions">
+            <input name="search" value="${escapeHtml(search)}" placeholder="Search by query, response or username">
+            <button type="submit">Search</button>
+            <a class="button secondary" href="/sessions">Reset</a>
+          </form>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Chat ID</th>
+              <th>User</th>
+              <th>Query</th>
+              <th>Response</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || '<tr><td colspan="6">No sessions found.</td></tr>'}
+          </tbody>
+        </table>
+        <div class="pager">
+          <div>Page ${page} of ${totalPages} · ${totalRows} rows</div>
+          <div class="actions">
+            ${prevPage ? `<a class="button secondary" href="/sessions?page=${prevPage}${searchPart}">Previous</a>` : ''}
+            ${nextPage ? `<a class="button secondary" href="/sessions?page=${nextPage}${searchPart}">Next</a>` : ''}
+          </div>
+        </div>
+      </div>`
+    ));
   } catch (error) {
     next(error);
   } finally {
