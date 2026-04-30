@@ -52,7 +52,8 @@ curl -X POST "http://127.0.0.1:5000/translate" \
 
 - Put Nginx in front of this service.
 - Expose only Nginx ports to the internet.
-- Keep `LT_LOAD_ONLY=ru,uk` for better performance.
+- Keep `LT_LOAD_ONLY=ru,en,uk` for RU<->UK usage.
+- RU<->UK in Argos uses EN as a bridge, so excluding `en` can break startup.
 - If public API is needed, enable keys/rate limiting.
 - Set `LT_THREADS` in `.env` if you want to tune worker count.
 
@@ -62,4 +63,42 @@ curl -X POST "http://127.0.0.1:5000/translate" \
 docker compose down
 docker compose pull
 docker compose up -d
+```
+
+## Troubleshooting OOM (Worker SIGKILL)
+
+If logs show `Worker was sent SIGKILL! Perhaps out of memory?`, your server RAM
+is too small for current worker/model load.
+
+Use these fixes:
+
+1. Keep only one worker in `.env`:
+
+```dotenv
+LT_THREADS=1
+```
+
+2. Restart cleanly:
+
+```bash
+docker compose down
+docker compose up -d
+docker compose logs -f libretranslate
+```
+
+3. On small VPS (1-2 GB RAM), add swap (Ubuntu example):
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -h
+```
+
+4. After first successful model download, you can disable model auto-update:
+
+```dotenv
+LT_UPDATE_MODELS=false
 ```
