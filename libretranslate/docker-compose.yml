@@ -1,0 +1,16 @@
+services:
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    container_name: libretranslate
+    restart: unless-stopped
+    ports:
+      - "${LT_PORT:-5000}:5000"
+    environment:
+      - LT_LOAD_ONLY=${LT_LOAD_ONLY:-ru,uk}
+      - LT_UPDATE_MODELS=${LT_UPDATE_MODELS:-true}
+      - LT_REQ_LIMIT=${LT_REQ_LIMIT:-120}
+      - LT_REQ_FLOOR=${LT_REQ_FLOOR:-60}
+      - LT_API_KEYS=${LT_API_KEYS:-false}
+      - LT_DEBUG=${LT_DEBUG:-false}
+    volumes:
+      - ./data:/home/libretranslate/.local
