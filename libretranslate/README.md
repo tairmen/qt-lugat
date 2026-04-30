@@ -6,7 +6,7 @@ This folder is a standalone LibreTranslate project for server deployment.
 
 - `docker-compose.yml` - service definition
 - `.env.example` - environment settings template
-- `data/` - model and runtime data volume (auto-created)
+- Docker named volume `libretranslate_data` for model/runtime data
 
 ## Deploy On Server
 
@@ -21,6 +21,16 @@ cp .env.example .env
 4. Start service:
 
 ```bash
+docker compose up -d
+```
+
+If you previously used a bind mount and saw `Permission denied` for
+`/home/libretranslate/.local/share`, run:
+
+```bash
+docker compose down
+docker compose rm -f libretranslate
+docker volume prune -f
 docker compose up -d
 ```
 
@@ -44,6 +54,7 @@ curl -X POST "http://127.0.0.1:5000/translate" \
 - Expose only Nginx ports to the internet.
 - Keep `LT_LOAD_ONLY=ru,uk` for better performance.
 - If public API is needed, enable keys/rate limiting.
+- Set `LT_THREADS` in `.env` if you want to tune worker count.
 
 ## Stop / Update
 
