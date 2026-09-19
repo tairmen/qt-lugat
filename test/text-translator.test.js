@@ -103,6 +103,29 @@ test('daily cap prevents additional paid calls', async () => {
   assert.equal(calls, 200);
 });
 
+test('rules and confirmed examples enter prompts and invalidate previously cached answers', async () => {
+  let version = 1;
+  let exampleText = 'Подтверждённый вариант';
+  let calls = 0;
+  const translator = createTextTranslator({ apiKey: 'test-only', loadDictionary: async () => [],
+    loadContext: async () => ({ rules: `Правило ${version}`, version, examples: [{ source_text: 'текст', translated_text: exampleText }] }),
+    fetchImpl: async (url, options) => {
+      calls++;
+      const body = JSON.parse(options.body);
+      assert.ok(body.instructions.includes(`Правило ${version}`));
+      assert.equal(JSON.parse(body.input).confirmed_examples[0].translated_text, exampleText);
+      return success(`Ответ ${calls}`);
+    } });
+  const input = { text: 'текст', target: 'crh', details: true };
+  assert.equal((await translator.translate({ ...input, userId: 1 })).cached, false);
+  assert.equal((await translator.translate({ ...input, userId: 2 })).cached, true);
+  version++;
+  assert.equal((await translator.translate({ ...input, userId: 3 })).rulesVersion, 2);
+  assert.equal(calls, 2);
+  exampleText = 'Исправленный вариант';
+  assert.equal((await translator.translate({ ...input, userId: 4 })).result, 'Ответ 3');
+});
+
 test('error report stores source and output, but only for the requesting user', async () => {
   let command;
   let callback;
@@ -123,4 +146,33 @@ test('error report stores source and output, but only for the requesting user', 
   assert.equal(saved.length, 1);
   assert.match(saved[0].word, /привет/);
   assert.match(saved[0].word, /selâm/);
+});
+
+test('text mode persists translation details and routes reports through durable history', async () => {
+  let command;
+  let callback;
+  let button;
+  const stored = [];
+  const acknowledgements = [];
+  const bot = {
+    onText(regex, fn) { if (regex.test('/text crh hi')) command = fn; },
+    on(event,fn) { callback = fn; },
+    async sendMessage(id,text,options) { if (options) button = options.reply_markup.inline_keyboard[0][0].callback_data; },
+    async answerCallbackQuery(id,options) { acknowledgements.push(options.text); }
+  };
+  const historyId = 'aed698df-eabc-49a2-961d-5593f6e4b05a';
+  const history = {
+    async record(data) { stored.push(data); return historyId; },
+    async report(id,chatId,userId) { return id === historyId && chatId === 10 && userId === 1; }
+  };
+  const translator = { translate: async () => ({ result:'selâm', model:'test-model', rulesVersion:3, cached:true }) };
+  registerTextMode({ bot, translator, history });
+  await command({ chat:{ id:10 },from:{ id:1 } }, ['', 'crh', 'привет']);
+  assert.equal(stored[0].rulesVersion,3);
+  assert.equal(stored[0].cached,true);
+  assert.equal(stored[0].result,'selâm');
+  // Re-register to simulate losing all in-memory report entries on restart.
+  registerTextMode({ bot, translator, history });
+  await callback({ id:'callback',data:button,message:{ chat:{ id:10 } },from:{ id:1 } });
+  assert.ok(acknowledgements[0].includes('Спасибо'));
 });

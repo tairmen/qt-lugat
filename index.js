@@ -361,11 +361,17 @@ function formatReverseSuggestions(query, suggestions) {
 const databaseConfig = getDatabaseConfig();
 const databasePool = createDatabasePool(databaseConfig);
 const bot = new TelegramBot(token, { polling: false });
+const { createDictionaryReports, telegramCall } = require('./dictionary-reports');
+const dictionaryReports = createDictionaryReports();
+const sendMessage = (...args) => telegramCall(bot, 'sendMessage', ...args);
+const answerCallbackQuery = (...args) => telegramCall(bot, 'answerCallbackQuery', ...args);
 const { createTextTranslator } = require('./text-translator');
 const { registerTextMode, HELP: textHelp } = require('./text-mode');
+const { ensureTranslationTables, createTranslationStore } = require('./translation-store');
+const translationStore = createTranslationStore(databasePool);
 const textMode = registerTextMode({
-  bot, pool: databasePool, logReport,
-  translator: createTextTranslator({ loadDictionary: loadDictionaryFromPostgres })
+  bot, pool: databasePool, logReport, history: translationStore,
+  translator: createTextTranslator({ loadDictionary: loadDictionaryFromPostgres, loadContext: translationStore.context })
 });
 
 async function respondWithLookup(chatId, query, meta = {}) {
@@ -373,7 +379,7 @@ async function respondWithLookup(chatId, query, meta = {}) {
 
   if (!cleanedQuery) {
     const reply = 'Send a Russian or Crimean Tatar word, or use /translate <word>.';
-    bot.sendMessage(chatId, reply);
+    sendMessage(chatId, reply);
     logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: reply }).catch(() => {});
     return;
   }
@@ -401,20 +407,20 @@ async function respondWithLookup(chatId, query, meta = {}) {
       const reportKeyboard = {
         reply_markup: {
           inline_keyboard: [[
-            { text: '⚠️ Report issue', callback_data: `report:${cleanedQuery.slice(0, 57)}` }
+            { text: '⚠️ Report issue', callback_data: dictionaryReports.create(chatId, cleanedQuery) }
           ]]
         }
       };
 
-      bot.sendMessage(chatId, message, reportKeyboard);
+      sendMessage(chatId, message, reportKeyboard);
     } else {
-      bot.sendMessage(chatId, message);
+      sendMessage(chatId, message);
     }
     logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: message }).catch(() => {});
   } catch (error) {
     console.error(`Lookup failed: ${error.message}`);
     const reply = 'Database request failed. Try again later.';
-    bot.sendMessage(chatId, reply);
+    sendMessage(chatId, reply);
     logChatSession(databasePool, { chatId, ...meta, query: cleanedQuery, response: reply }).catch(() => {});
   }
 }
@@ -439,7 +445,7 @@ bot.onText(/^\/start$/, (message) => {
     '',
     'You can also just send a Russian or Crimean Tatar word directly.'
   ].join('\n');
-  bot.sendMessage(message.chat.id, reply);
+  sendMessage(message.chat.id, reply);
   logChatSession(databasePool, { chatId: message.chat.id, ...getMeta(message), query: '/start', response: reply }).catch(() => {});
 });
 
@@ -455,7 +461,7 @@ bot.onText(/^\/help$/, (message) => {
     '',
     'Found a wrong translation? Use /report <word>.'
   ].join('\n');
-  bot.sendMessage(message.chat.id, reply);
+  sendMessage(message.chat.id, reply);
   logChatSession(databasePool, { chatId: message.chat.id, ...getMeta(message), query: '/help', response: reply }).catch(() => {});
 });
 
@@ -463,16 +469,16 @@ bot.onText(/^\/report(?:\s+(.+))?$/i, async (message, match) => {
   const word = match && match[1] ? match[1].trim() : '';
 
   if (!word) {
-    bot.sendMessage(message.chat.id, 'Usage: /report <word>\nExample: /report яблоко');
+    sendMessage(message.chat.id, 'Usage: /report <word>\nExample: /report яблоко');
     return;
   }
 
   try {
     await logReport(databasePool, { chatId: message.chat.id, ...getMeta(message), word });
-    bot.sendMessage(message.chat.id, `Thank you! Your report for "${word}" has been submitted.`);
+    sendMessage(message.chat.id, `Thank you! Your report for "${word}" has been submitted.`);
   } catch (error) {
     console.error(`Failed to save report: ${error.message}`);
-    bot.sendMessage(message.chat.id, 'Failed to submit report. Try again later.');
+    sendMessage(message.chat.id, 'Failed to submit report. Try again later.');
   }
 });
 
@@ -495,11 +501,18 @@ bot.on('message', (message) => {
 });
 
 bot.on('callback_query', async (query) => {
-  if (!query.data || !query.data.startsWith('report:')) {
+  if (!query.message || !query.data || (!query.data.startsWith('report:') && !query.data.startsWith('dict-report:'))) {
     return;
   }
 
-  const word = query.data.slice('report:'.length);
+  // Keep previously sent short report buttons working.
+  const word = query.data.startsWith('report:')
+    ? query.data.slice('report:'.length)
+    : dictionaryReports.resolve(query.data, query.message.chat.id);
+  if (word === null) {
+    await answerCallbackQuery(query.id, { text: 'Кнопка устарела. Повторите поиск или используйте /report.' });
+    return;
+  }
   const meta = {
     username: query.from && query.from.username,
     firstName: query.from && query.from.first_name
@@ -507,10 +520,10 @@ bot.on('callback_query', async (query) => {
 
   try {
     await logReport(databasePool, { chatId: query.message.chat.id, ...meta, word });
-    bot.answerCallbackQuery(query.id, { text: 'Report submitted. Thank you!' });
+    answerCallbackQuery(query.id, { text: 'Report submitted. Thank you!' });
   } catch (error) {
     console.error(`Failed to save report: ${error.message}`);
-    bot.answerCallbackQuery(query.id, { text: 'Failed to submit report. Try again later.' });
+    answerCallbackQuery(query.id, { text: 'Failed to submit report. Try again later.' });
   }
 });
 
@@ -525,6 +538,7 @@ async function startBot() {
   await client.end();
   await ensureChatSessionsTable(databasePool);
   await ensureReportsTable(databasePool);
+  await ensureTranslationTables(databasePool);
   await bot.startPolling();
   console.log(
     `Bot is running. Every lookup reads dictionary data from PostgreSQL table ${databaseConfig.table}.`

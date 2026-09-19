@@ -1,10 +1,13 @@
 const express = require('express');
 require('dotenv').config();
 
-const { createDatabaseClient, getDatabaseConfig } = require('./database');
+const { createDatabaseClient, createDatabasePool, getDatabaseConfig } = require('./database');
+const { ensureTranslationTables } = require('./translation-store');
+const { createTranslationAdmin } = require('./translation-admin');
 
 const app = express();
 const databaseConfig = getDatabaseConfig();
+const translationPool = createDatabasePool(databaseConfig);
 const adminPort = Number(process.env.ADMIN_PORT || 3000);
 const adminUsername = process.env.ADMIN_USERNAME || 'admin';
 const adminPassword = process.env.ADMIN_PASSWORD;
@@ -182,6 +185,7 @@ function layout(title, content) {
     }
     nav {
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
       margin-bottom: 24px;
     }
@@ -214,10 +218,13 @@ function layout(title, content) {
 <body>
   <div class="shell">
     <nav>
-      <a href="/words" class="${!title.includes('Session') && !title.includes('User') && !title.includes('Report') ? 'active' : ''}">Words</a>
+      <a href="/words" class="${!title.includes('Session') && !title.includes('User') && !title.includes('Report') && !title.startsWith('Тексты') && !title.startsWith('Подтверждённые') && !title.startsWith('Правила') ? 'active' : ''}">Words</a>
       <a href="/users" class="${title.includes('User') ? 'active' : ''}">Users</a>
       <a href="/sessions" class="${title.includes('Session') && !title.includes('User') ? 'active' : ''}">Sessions</a>
       <a href="/reports" class="${title.includes('Report') ? 'active' : ''}">Reports</a>
+      <a href="/text-translations" class="${title.startsWith('Тексты') ? 'active' : ''}">Тексты</a>
+      <a href="/confirmed-translations" class="${title.startsWith('Подтверждённые') ? 'active' : ''}">Подтверждённые переводы</a>
+      <a href="/translation-rules" class="${title.startsWith('Правила') ? 'active' : ''}">Правила перевода</a>
     </nav>
     ${content}
   </div>
@@ -312,6 +319,7 @@ function renderWordForm(title, action, values, submitLabel) {
 }
 
 app.use(requireBasicAuth);
+app.use(createTranslationAdmin({ pool: translationPool, layout, escapeHtml, adminUsername }));
 
 app.get('/', (req, res) => {
   res.redirect('/words');
@@ -979,6 +987,15 @@ app.use((error, req, res, next) => {
   ));
 });
 
-app.listen(adminPort, () => {
-  console.log(`Admin panel is running at http://localhost:${adminPort}`);
-});
+if (require.main === module) {
+  ensureTranslationTables(translationPool).then(() => {
+    app.listen(adminPort, () => {
+      console.log(`Admin panel is running at http://localhost:${adminPort}`);
+    });
+  }).catch(() => {
+    console.error('Admin startup failed: unable to initialize translation tables.');
+    process.exit(1);
+  });
+}
+
+module.exports = { layout, escapeHtml, requireBasicAuth };

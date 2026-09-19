@@ -26,16 +26,53 @@ per UTC day, 45-second API timeout. Failed API requests count toward the daily
 limit. In-memory limits reset on restart; use one bot process and configure an
 OpenAI project spend limit separately for a durable budget control.
 
-The error button saves the original text, direction and generated translation
-in the existing admin Reports page. It does not mark the translation as verified.
-Buttons expire after 24 hours, on restart, or when displaced from the 500-item
-memory buffer. Translation text is not added to chat history automatically.
+Text translations and failures are saved in PostgreSQL and shown on the admin
+**Тексты** page (`/text-translations`). Records include source, output, direction,
+user, model, rules version, cache status and timestamp. The error button flags
+the history record; these buttons survive bot restarts. If saving history fails,
+the translation is still delivered, with a temporary report button that falls
+back to the old Reports page. Old Reports entries are preserved; past successful
+translations that were never stored cannot be reconstructed.
+
+**Подтверждённые переводы** (`/confirmed-translations`) contains human-reviewed
+pairs. Open a history record, choose **Исправить и подтвердить**, edit the answer,
+and save; or add a pair manually. Entries can be edited or deleted. Removing an
+example preserves the original history. Editor notes are not sent to the model.
+The translator retrieves up to five examples in the same direction, preferring
+exact source matches and then shared tokens (16,000-character budget). It does
+not fine-tune the model or automatically mark generated translations as verified.
+
+**Правила перевода** (`/translation-rules`) stores a shared instruction text for
+both translation directions, up to 12,000 characters. Changes take effect on the
+next request without a restart. Empty rules leave the base translator prompt.
+Current rules and relevant examples are read before cache lookup and included in
+the cache key, so edits invalidate affected cached results. A request already in
+progress uses the version loaded when it began. Optimistic version checks protect
+rule/example edits from silently overwriting another editor's saved changes.
+
+Both processes initialize the new tables (`text_translations`,
+`confirmed_translations`, `translation_rules`) automatically at startup; concurrent
+startup is protected by a PostgreSQL advisory lock. Existing dictionary tables
+are unchanged. The configured database role needs CREATE permissions for startup.
+Deploy this update to **both the bot and admin** and restart both:
+
+```bash
+pm2 restart lugat-bot --update-env
+pm2 restart lugat-admin --update-env
+```
 
 Run `npm test` for offline tests. For two small **paid** API checks, run
 `node scripts/check-text-translation.js`; this uses the local dictionary export
 and does not start the bot. Production translation uses PostgreSQL.
 Deploy the changed files and configure the key on the server, then restart the
 existing bot process with `pm2 restart lugat-bot --update-env`.
+
+For the database/admin integration test, run
+`TEST_POSTGRES=1 node --test test/translation-admin.integration.test.js` on Linux,
+or `$env:TEST_POSTGRES='1'; node --test test/translation-admin.integration.test.js`
+in PowerShell. It uses `.env` database settings, creates a uniquely named
+`test_lugat_*` schema, tests the routes through HTTP, and removes that schema.
+It does not call OpenAI or Telegram.
 
 Telegram bot on Node.js that translates words between Russian and Crimean Tatar using PostgreSQL.
 
