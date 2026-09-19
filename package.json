@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Telegram bot for Russian to Crimean Tatar word translation",
   "main": "index.js",
+  "engines": { "node": ">=18" },
   "scripts": {
+    "test": "node --test",
     "start": "node index.js",
     "admin": "node admin.js",
     "export:csv": "node scripts/export-csv.js",

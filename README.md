@@ -1,5 +1,42 @@
 # Lugat Bot
 
+## Text translation (experimental)
+
+Requires Node.js 18+ and `OPENAI_API_KEY` in the ignored `.env` file.
+`OPENAI_MODEL` defaults to `gpt-4.1`; quality on Crimean Tatar must be
+reviewed by a native speaker before a broad release.
+
+- `/text crh` selects Russian → Crimean Tatar in Latin script.
+- `/text ru` selects Crimean Tatar → Russian.
+- `/text crh Я читаю книгу.` translates immediately and selects that mode.
+- `/dictionary` returns subsequent messages to dictionary lookup.
+- `/translate <word>` always performs dictionary lookup.
+
+Mode is per user per chat, stored in memory and resets on restart. Text is sent
+to OpenAI Responses API with `store: false`, together with up to 25 relevant
+dictionary entries (10,000-character glossary budget). The glossary currently
+matches exact headwords and phrases up to five words, without lemmatization or
+Cyrillic-to-Latin conversion. Missing forms are handled by the model. Dictionary
+data is refreshed every minute; cached results include the selected glossary
+in their key and expire after ten minutes (maximum 200 entries).
+
+Limits per bot process: 2,000 input characters, one active request per user,
+ten seconds between requests, three simultaneous translations, 200 API requests
+per UTC day, 45-second API timeout. Failed API requests count toward the daily
+limit. In-memory limits reset on restart; use one bot process and configure an
+OpenAI project spend limit separately for a durable budget control.
+
+The error button saves the original text, direction and generated translation
+in the existing admin Reports page. It does not mark the translation as verified.
+Buttons expire after 24 hours, on restart, or when displaced from the 500-item
+memory buffer. Translation text is not added to chat history automatically.
+
+Run `npm test` for offline tests. For two small **paid** API checks, run
+`node scripts/check-text-translation.js`; this uses the local dictionary export
+and does not start the bot. Production translation uses PostgreSQL.
+Deploy the changed files and configure the key on the server, then restart the
+existing bot process with `pm2 restart lugat-bot --update-env`.
+
 Telegram bot on Node.js that translates words between Russian and Crimean Tatar using PostgreSQL.
 
 ## Setup

@@ -361,6 +361,12 @@ function formatReverseSuggestions(query, suggestions) {
 const databaseConfig = getDatabaseConfig();
 const databasePool = createDatabasePool(databaseConfig);
 const bot = new TelegramBot(token, { polling: false });
+const { createTextTranslator } = require('./text-translator');
+const { registerTextMode, HELP: textHelp } = require('./text-mode');
+const textMode = registerTextMode({
+  bot, pool: databasePool, logReport,
+  translator: createTextTranslator({ loadDictionary: loadDictionaryFromPostgres })
+});
 
 async function respondWithLookup(chatId, query, meta = {}) {
   const cleanedQuery = String(query || '').trim();
@@ -426,6 +432,7 @@ bot.onText(/^\/start$/, (message) => {
     'Crimean Tatar -> Russian lookup is also supported.',
     '',
     'Commands:',
+    textHelp,
     '/translate <word> - find translation',
     '/report <word> - report a translation issue',
     '/help - show help',
@@ -439,6 +446,7 @@ bot.onText(/^\/start$/, (message) => {
 bot.onText(/^\/help$/, (message) => {
   const reply = [
     'Usage examples:',
+    textHelp,
     '/translate яблоко',
     '/translate alma',
     '/translate язык',
@@ -480,6 +488,8 @@ bot.on('message', (message) => {
   if (message.text.startsWith('/')) {
     return;
   }
+
+  if (textMode.handle(message)) return;
 
   void respondWithLookup(message.chat.id, message.text, getMeta(message));
 });
